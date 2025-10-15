@@ -1,0 +1,33 @@
+# Web Scraping
+selenium
+beautifulsoup4
+webdriver-manager
+
+# Database
+pymongo
+
+# Embeddings and Vector Search
+sentence-transformers
+torch
+transformers
+
+# LlamaIndex
+llama-index
+llama-index-vector-stores-mongodb
+llama-index-embeddings-huggingface
+llama-index-llms-openai
+llama-index-llms-huggingface
+
+# FastAPI
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+
+# Environment and Utilities
+python-dotenv
+requests
+numpy
+
+# Logging
+colorlog
