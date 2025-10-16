@@ -82,7 +82,7 @@ User Query → FastAPI → LlamaIndex RAG Pipeline
 ### 1. Clone หรือดาวน์โหลดโปรเจค
 
 ```bash
-cd /Users/piw/Downloads/agn_chat
+git clone https://github.com/Natthaphatpiw/agn_chat.git
 ```
 
 ### 2. สร้าง Virtual Environment
