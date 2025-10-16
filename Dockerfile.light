@@ -1,0 +1,54 @@
+# Lightweight Dockerfile for servers with limited disk space
+# Uses CPU-only PyTorch and minimal dependencies
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Upgrade pip
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy requirements
+COPY requirements-light.txt .
+
+# Upgrade pip first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install Python packages (no cache to ensure fresh install)
+RUN pip install --no-cache-dir --upgrade -r requirements-light.txt && \
+    rm -rf /root/.cache/pip && \
+    rm -rf /tmp/*
+
+# NOTE: We don't download models here anymore
+# Models will be downloaded on first run if needed (when no OpenAI key)
+# This keeps the image smaller and allows using OpenAI API instead
+
+# Create necessary directories
+RUN mkdir -p logs models
+
+# Copy application files (only what we need)
+COPY app.py config.py .env* ./
+
+# Set environment variables
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    PYTORCH_ENABLE_MPS_FALLBACK=1
+
+# Expose port
+EXPOSE 8001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Run the application
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]

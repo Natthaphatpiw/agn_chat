@@ -17,6 +17,7 @@ llama-index-vector-stores-mongodb
 llama-index-embeddings-huggingface
 llama-index-llms-openai
 llama-index-llms-huggingface
+llama-index-llms-llama-cpp
 
 # FastAPI
 fastapi
@@ -28,6 +29,10 @@ python-multipart
 python-dotenv
 requests
 numpy
+
+# Local LLM Support
+llama-cpp-python
+huggingface-hub
 
 # Logging
 colorlog

@@ -1,0 +1,41 @@
+# Docker Requirements - Simplified version
+# Install core packages first, then LlamaIndex ecosystem
+
+# FastAPI and server
+fastapi
+uvicorn[standard]
+pydantic<2.0
+python-multipart
+
+# Database
+pymongo
+
+# Environment
+python-dotenv
+requests
+
+# Core AI/ML packages
+numpy
+# Use CPU-only torch to save space (no CUDA)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+transformers
+sentence-transformers
+
+# HuggingFace
+huggingface-hub
+
+# LlamaIndex - core first
+llama-index
+
+# LlamaIndex integrations
+llama-index-vector-stores-mongodb
+llama-index-embeddings-huggingface
+llama-index-llms-openai
+llama-index-llms-llama-cpp
+
+# Local LLM support
+llama-cpp-python
+
+# Logging
+colorlog

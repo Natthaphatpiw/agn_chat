@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  agn-chat:
+    build:
+      context: .
+      dockerfile: Dockerfile.light
+    container_name: agn-chat-app
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env  # Load all environment variables from .env file
+    environment:
+      # Override specific vars if needed (optional)
+      - API_HOST=0.0.0.0
+      - API_PORT=8001
+    volumes:
+      # Persist HuggingFace cache (where models are downloaded)
+      - huggingface-cache:/root/.cache/huggingface
+      # Persist torch cache (sentence-transformers)
+      - torch-cache:/root/.cache/torch
+      # Persist models directory
+      - ./models:/app/models
+      # Persist logs
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - agn-network
+
+volumes:
+  huggingface-cache:
+    driver: local
+  torch-cache:
+    driver: local
+
+networks:
+  agn-network:
+    driver: bridge
