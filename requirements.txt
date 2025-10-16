@@ -1,38 +1,39 @@
-# Web Scraping
-selenium
-beautifulsoup4
-webdriver-manager
+# Lightweight requirements for Docker deployment
+# CPU-only version to minimize disk usage
+
+# FastAPI and server
+fastapi
+uvicorn[standard]
+pydantic<2.0
+python-multipart
 
 # Database
 pymongo
 
-# Embeddings and Vector Search
-sentence-transformers
-torch
-transformers
+# Environment
+python-dotenv
+requests
 
-# LlamaIndex
+# Core packages
+numpy
+
+# HuggingFace
+huggingface-hub
+
+# Install PyTorch CPU-only version (much smaller)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# ML packages
+transformers
+sentence-transformers
+
+# LlamaIndex core
 llama-index
+
+# LlamaIndex integrations
 llama-index-vector-stores-mongodb
 llama-index-embeddings-huggingface
 llama-index-llms-openai
-llama-index-llms-huggingface
 llama-index-llms-llama-cpp
 
-# FastAPI
-fastapi
-uvicorn[standard]
-pydantic
-python-multipart
-
-# Environment and Utilities
-python-dotenv
-requests
-numpy
-
-# Local LLM Support
-llama-cpp-python
-huggingface-hub
-
-# Logging
-colorlog

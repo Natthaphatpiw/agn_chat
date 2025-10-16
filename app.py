@@ -3,6 +3,8 @@ FastAPI backend for AGN Health Q&A RAG system using LlamaIndex.
 Provides chat endpoint for querying medical Q&A using vector search and LLM.
 """
 import logging
+import uuid
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +14,8 @@ from llama_index.core import VectorStoreIndex, Settings, Document
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.postprocessor import SimilarityPostprocessor
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.chat_engine import CondensePlusContextChatEngine
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.mongodb import MongoDBAtlasVectorSearch
 from llama_index.llms.openai import OpenAI as OpenAI
@@ -55,6 +59,7 @@ class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     query: str = Field(..., description="User's question", min_length=1)
     top_k: Optional[int] = Field(5, description="Number of similar documents to retrieve", ge=1, le=20)
+    session_id: Optional[str] = Field(None, description="Session ID for conversation memory. If not provided, a new session will be created")
 
 
 class SourceDocument(BaseModel):
@@ -71,10 +76,15 @@ class ChatResponse(BaseModel):
     """Response model for chat endpoint."""
     response: str = Field(..., description="Generated response")
     sources: Optional[List[SourceDocument]] = Field(None, description="Source documents used")
+    session_id: str = Field(..., description="Session ID for continuing the conversation")
 
 
 class LlamaIndexRAGSystem:
-    """RAG system using LlamaIndex for question answering."""
+    """RAG system using LlamaIndex for question answering with conversation memory.
+
+    This system supports both OpenAI and Llama-2 models, and includes conversation memory
+    to maintain context across multiple queries within the same session.
+    """
 
     def __init__(self):
         """Initialize RAG system with LlamaIndex components."""
@@ -84,12 +94,14 @@ class LlamaIndexRAGSystem:
         self.query_engine = None
         self.embed_model = None
         self.llm = None
+        self.chat_engines = {}  # เก็บ chat engines แยกตาม session
+        self.session_cleanup_time = {}  # เก็บเวลาที่ใช้ล่าสุดของแต่ละ session
 
         self._setup_mongodb()
         self._setup_embeddings()
         self._setup_llm()
         self._setup_vector_store()
-        self._setup_query_engine()
+        # Note: Chat engines are created per session, not globally
 
     def _setup_mongodb(self):
         """Set up MongoDB connection."""
@@ -202,30 +214,40 @@ class LlamaIndexRAGSystem:
             logger.error(f"Failed to setup vector store: {e}")
             raise
 
-    def _setup_query_engine(self):
-        """Set up query engine with LlamaIndex."""
+    def _create_chat_engine(self, session_id: str):
+        """Create a new chat engine for the given session."""
         try:
             if self.llm_type in ["openai", "llama2"] and self.llm:
-                # Create retriever
+                # Create retriever for context retrieval
                 retriever = VectorIndexRetriever(
                     index=self.index,
                     similarity_top_k=10,  # Retrieve more for post-processing
                 )
 
-                # Create query engine with post-processor
-                self.query_engine = RetrieverQueryEngine(
+                # Create memory for this session
+                memory = ChatMemoryBuffer.from_defaults(llm=self.llm, token_limit=2000)
+
+                # Create CondensePlusContextChatEngine with memory
+                chat_engine = CondensePlusContextChatEngine.from_defaults(
                     retriever=retriever,
+                    memory=memory,
                     node_postprocessors=[
                         SimilarityPostprocessor(similarity_cutoff=0.5)
                     ],
+                    verbose=True
                 )
 
-                logger.info("Query engine initialized successfully")
+                self.chat_engines[session_id] = chat_engine
+                self.session_cleanup_time[session_id] = datetime.now()
+
+                logger.info(f"Chat engine created for session {session_id}")
+                return chat_engine
             else:
-                logger.info("Query engine initialized in fallback mode (retrieval only)")
+                logger.warning("Cannot create chat engine: LLM not available")
+                return None
         except Exception as e:
-            logger.error(f"Failed to setup query engine: {e}")
-            raise
+            logger.error(f"Failed to create chat engine: {e}")
+            return None
 
     def normalize_query(self, query: str) -> str:
         """Normalize user query using LLM if available."""
@@ -411,32 +433,90 @@ class LlamaIndexRAGSystem:
 
         return "\n".join(response_parts)
 
-    def process_query(self, query: str, top_k: int = 5) -> tuple[str, List[Dict]]:
+    def process_query(self, query: str, session_id: str, top_k: int = 5) -> tuple[str, List[Dict]]:
         """
-        Process a user query through the RAG pipeline using LlamaIndex.
+        Process a user query through the RAG pipeline using LlamaIndex chat engine.
 
         Args:
             query: User's question
+            session_id: Session ID for conversation memory
             top_k: Number of documents to retrieve
 
         Returns:
             Tuple of (response, source_documents)
         """
         try:
+            # Get or create chat engine for this session
+            chat_engine = self.chat_engines.get(session_id)
+            if not chat_engine:
+                chat_engine = self._create_chat_engine(session_id)
+                if not chat_engine:
+                    # Fallback to old method if chat engine creation fails
+                    return self._fallback_process_query(query, top_k)
+
+            # Update session timestamp
+            self.session_cleanup_time[session_id] = datetime.now()
+
             # Step 1: Normalize query (optional, using LLM)
             normalized_query = self.normalize_query(query)
 
-            # Step 2: Retrieve relevant documents using LlamaIndex
+            # Step 2: Use chat engine to process query with context and memory
+            response_obj = chat_engine.chat(normalized_query)
+
+            # Extract response text
+            response = str(response_obj)
+
+            # Step 3: Retrieve source documents (for backward compatibility with frontend)
+            # Note: Chat engine handles context retrieval internally
             contexts = self.retrieve_documents(normalized_query, top_k)
 
-            # Step 3: Generate response using LlamaIndex query engine
+            return response, contexts
+
+        except Exception as e:
+            logger.error(f"Error processing query with chat engine: {e}")
+            # Fallback to old method
+            return self._fallback_process_query(query, top_k)
+
+    def _fallback_process_query(self, query: str, top_k: int = 5) -> tuple[str, List[Dict]]:
+        """Fallback processing method when chat engine is not available."""
+        try:
+            # Step 1: Normalize query (optional, using LLM)
+            normalized_query = self.normalize_query(query)
+
+            # Step 2: Retrieve relevant documents
+            contexts = self.retrieve_documents(normalized_query, top_k)
+
+            # Step 3: Generate response
             response = self.generate_response(normalized_query, contexts)
 
             return response, contexts
 
         except Exception as e:
-            logger.error(f"Error processing query: {e}")
+            logger.error(f"Error in fallback processing: {e}")
             raise
+
+    def cleanup_old_sessions(self, max_age_hours: int = 24):
+        """Clean up sessions that haven't been used for more than max_age_hours."""
+        try:
+            cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+            sessions_to_remove = []
+
+            for session_id, last_used in self.session_cleanup_time.items():
+                if last_used < cutoff_time:
+                    sessions_to_remove.append(session_id)
+
+            for session_id in sessions_to_remove:
+                if session_id in self.chat_engines:
+                    del self.chat_engines[session_id]
+                if session_id in self.session_cleanup_time:
+                    del self.session_cleanup_time[session_id]
+                logger.info(f"Cleaned up session: {session_id}")
+
+            if sessions_to_remove:
+                logger.info(f"Cleaned up {len(sessions_to_remove)} old sessions")
+
+        except Exception as e:
+            logger.error(f"Error cleaning up sessions: {e}")
 
 
 # Initialize RAG system
@@ -460,18 +540,23 @@ async def startup_event():
 async def shutdown_event():
     """Clean up resources on shutdown."""
     global rag_system
-    if rag_system and rag_system.mongo_client:
-        rag_system.mongo_client.close()
-        logger.info("MongoDB connection closed")
+    if rag_system:
+        # Clean up old sessions
+        rag_system.cleanup_old_sessions()
+        # Close MongoDB connection
+        if rag_system.mongo_client:
+            rag_system.mongo_client.close()
+            logger.info("MongoDB connection closed")
 
 
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {
-        "message": "AGN Health Q&A RAG API with LlamaIndex",
+        "message": "AGN Health Q&A RAG API with LlamaIndex and Conversation Memory",
         "version": "2.0.0",
         "framework": "LlamaIndex",
+        "features": ["RAG", "Conversation Memory", "OpenAI/Llama-2 Support"],
         "status": "running"
     }
 
@@ -479,30 +564,80 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "framework": "LlamaIndex"}
+    return {"status": "healthy", "framework": "LlamaIndex", "memory_enabled": True}
+
+
+@app.post("/session/new")
+async def create_new_session():
+    """Create a new chat session."""
+    try:
+        if not rag_system:
+            raise HTTPException(status_code=503, detail="RAG system not initialized")
+
+        session_id = str(uuid.uuid4())
+        logger.info(f"Created new session: {session_id}")
+
+        return {"session_id": session_id, "message": "New session created"}
+
+    except Exception as e:
+        logger.error(f"Error creating new session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/session/{session_id}")
+async def clear_session(session_id: str):
+    """Clear a chat session and its memory."""
+    try:
+        if not rag_system:
+            raise HTTPException(status_code=503, detail="RAG system not initialized")
+
+        if session_id in rag_system.chat_engines:
+            del rag_system.chat_engines[session_id]
+            del rag_system.session_cleanup_time[session_id]
+            logger.info(f"Cleared session: {session_id}")
+            return {"message": f"Session {session_id} cleared"}
+        else:
+            return {"message": f"Session {session_id} not found"}
+
+    except Exception as e:
+        logger.error(f"Error clearing session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Chat endpoint for querying medical Q&A using LlamaIndex RAG.
+    Chat endpoint for querying medical Q&A using LlamaIndex RAG with conversation memory.
+
+    This endpoint supports conversation memory - if you provide a session_id from a previous
+    request, the system will remember the conversation history and provide more contextually
+    relevant answers. If no session_id is provided, a new session will be created.
 
     Args:
-        request: ChatRequest with query and optional top_k
+        request: ChatRequest with query, optional session_id, and optional top_k
 
     Returns:
-        ChatResponse with generated answer and sources
+        ChatResponse with generated answer, sources, and session_id for continuation
     """
     try:
         if not rag_system:
             raise HTTPException(status_code=503, detail="RAG system not initialized")
 
+        # Handle session management
+        if not request.session_id:
+            # Create new session if not provided
+            session_id = str(uuid.uuid4())
+            logger.info(f"Created new session: {session_id}")
+        else:
+            session_id = request.session_id
+            logger.info(f"Using existing session: {session_id}")
+
         logger.info(f"Received query: {request.query}")
 
-        # Process query through LlamaIndex RAG pipeline
-        response, sources = rag_system.process_query(request.query, request.top_k)
+        # Process query through LlamaIndex RAG pipeline with session
+        response, sources = rag_system.process_query(request.query, session_id, request.top_k)
 
-        logger.info(f"Generated response for query: {request.query}")
+        logger.info(f"Generated response for query: {request.query} in session: {session_id}")
 
         # Convert sources to SourceDocument models
         source_docs = [
@@ -519,7 +654,8 @@ async def chat(request: ChatRequest):
 
         return ChatResponse(
             response=response,
-            sources=source_docs
+            sources=source_docs,
+            session_id=session_id
         )
 
     except Exception as e:
